@@ -2,6 +2,7 @@ from __future__ import annotations
 from fastapi import FastAPI, Query, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from typing import Optional
+from datetime import datetime, timedelta
 import sqlite3
 import os
 import time
@@ -15,7 +16,6 @@ START_TIME = time.time()
 ai_client = AzureAIFoundryClient()
 DEPLOYMENT = "gpt-5.4"
 
-# Simple in-memory cache for AI remediation results
 remediation_cache: dict = {}
 
 app = FastAPI(
@@ -52,14 +52,11 @@ def get_cves_from_source():
     return MOCK_CVES, "mock"
 
 def generate_remediation(cve_id: str, description: str, severity: str) -> str:
-    # Check cache first
     if cve_id in remediation_cache:
         print(f"[AI] Cache hit for {cve_id}")
         return remediation_cache[cve_id]
-
     try:
         print(f"[AI] Generating remediation for {cve_id}...")
-
         prompt = f"""You are a cybersecurity expert. Given the following CVE, provide a concise and practical remediation recommendation in 3-5 bullet points.
 
 CVE ID: {cve_id}
@@ -67,7 +64,6 @@ Severity: {severity}
 Description: {description}
 
 Respond with ONLY the bullet points, no intro text. Each bullet should be actionable and specific."""
-
         result = ai_client.generate_completion(
             deployment_name=DEPLOYMENT,
             prompt=prompt,
@@ -75,10 +71,8 @@ Respond with ONLY the bullet points, no intro text. Each bullet should be action
             temperature=0.3,
         )
         print(f"[AI] Result: {result}")
-
         if result:
             remediation_cache[cve_id] = result
-
         return result or "Remediation could not be generated at this time."
     except Exception as e:
         print(f"[AI] ERROR: {str(e)}")
@@ -98,76 +92,6 @@ def health():
         "cached_remediations": len(remediation_cache),
     }
 
-@app.get("/cves")
-def get_cves(
-    severity: Optional[str] = Query(None, description="Filter by severity: CRITICAL, HIGH, MEDIUM, LOW"),
-    search: Optional[str] = Query(None, description="Search in CVE ID, title or description"),
-    sort: Optional[str] = Query("date_desc", description="Sort: score_desc, score_asc, date_desc, date_asc"),
-    from_date: Optional[str] = Query(None, description="Filter from date: YYYY-MM-DD"),
-    to_date: Optional[str] = Query(None, description="Filter to date: YYYY-MM-DD"),
-    limit: int = Query(50, description="Max results to return"),
-    offset: int = Query(0, description="Pagination offset")
-):
-    cves, source = get_cves_from_source()
-
-    if severity:
-        cves = [c for c in cves if c["severity"].upper() == severity.upper()]
-
-    if search:
-        cves = [c for c in cves if
-                search.lower() in c["cve_id"].lower() or
-                search.lower() in c.get("title", "").lower() or
-                search.lower() in c["description"].lower()]
-
-    if from_date:
-        cves = [c for c in cves if c["published_date"] >= from_date]
-
-    if to_date:
-        cves = [c for c in cves if c["published_date"] <= to_date]
-
-    if sort == "score_desc":
-        cves = sorted(cves, key=lambda x: x.get("cvss_score") or 0, reverse=True)
-    elif sort == "score_asc":
-        cves = sorted(cves, key=lambda x: x.get("cvss_score") or 0)
-    elif sort == "date_asc":
-        cves = sorted(cves, key=lambda x: x.get("published_date") or "")
-    else:
-        cves = sorted(cves, key=lambda x: x.get("published_date") or "", reverse=True)
-
-    total = len(cves)
-    cves = cves[offset:offset + limit]
-
-    return {"total": total, "offset": offset, "limit": limit, "data_source": source, "data": cves}
-
-@app.get("/cves/summary")
-def get_summary():
-    cves, source = get_cves_from_source()
-    total = len(cves)
-    by_severity = {}
-    for severity in ["CRITICAL", "HIGH", "MEDIUM", "LOW"]:
-        count = len([c for c in cves if c["severity"] == severity])
-        by_severity[severity] = {
-            "count": count,
-            "percentage": round((count / total * 100), 1) if total > 0 else 0
-        }
-    top_10 = sorted(cves, key=lambda x: x.get("cvss_score") or 0, reverse=True)[:10]
-    return {"total": total, "data_source": source, "by_severity": by_severity, "top_10_most_dangerous": top_10}
-
-@app.get("/cves/{cve_id}")
-def get_cve(cve_id: str, remediation: bool = Query(False, description="Include AI remediation recommendation")):
-    cves, _ = get_cves_from_source()
-    for cve in cves:
-        if cve["cve_id"].upper() == cve_id.upper():
-            result = dict(cve)
-            if remediation:
-                result["remediation"] = generate_remediation(
-                    cve["cve_id"],
-                    cve["description"],
-                    cve["severity"]
-                )
-            return result
-    raise HTTPException(status_code=404, detail=f"{cve_id} not found")
-
 @app.get("/stats")
 def get_stats():
     cves, source = get_cves_from_source()
@@ -186,3 +110,120 @@ def cache_stats():
         "cached_remediations": len(remediation_cache),
         "cached_cve_ids": list(remediation_cache.keys())
     }
+
+@app.get("/cves")
+def get_cves(
+    severity: Optional[str] = Query(None, description="Filter by severity: CRITICAL, HIGH, MEDIUM, LOW"),
+    search: Optional[str] = Query(None, description="Search in CVE ID, title or description"),
+    sort: Optional[str] = Query("date_desc", description="Sort: score_desc, score_asc, date_desc, date_asc"),
+    from_date: Optional[str] = Query(None, description="Filter from date: YYYY-MM-DD"),
+    to_date: Optional[str] = Query(None, description="Filter to date: YYYY-MM-DD"),
+    limit: int = Query(50, description="Max results to return"),
+    offset: int = Query(0, description="Pagination offset")
+):
+    cves, source = get_cves_from_source()
+    if severity:
+        cves = [c for c in cves if c["severity"].upper() == severity.upper()]
+    if search:
+        cves = [c for c in cves if
+                search.lower() in c["cve_id"].lower() or
+                search.lower() in c.get("title", "").lower() or
+                search.lower() in c["description"].lower()]
+    if from_date:
+        cves = [c for c in cves if c["published_date"] >= from_date]
+    if to_date:
+        cves = [c for c in cves if c["published_date"] <= to_date]
+    if sort == "score_desc":
+        cves = sorted(cves, key=lambda x: x.get("cvss_score") or 0, reverse=True)
+    elif sort == "score_asc":
+        cves = sorted(cves, key=lambda x: x.get("cvss_score") or 0)
+    elif sort == "date_asc":
+        cves = sorted(cves, key=lambda x: x.get("published_date") or "")
+    else:
+        cves = sorted(cves, key=lambda x: x.get("published_date") or "", reverse=True)
+    total = len(cves)
+    cves = cves[offset:offset + limit]
+    return {"total": total, "offset": offset, "limit": limit, "data_source": source, "data": cves}
+
+@app.get("/cves/summary")
+def get_summary():
+    cves, source = get_cves_from_source()
+    total = len(cves)
+    by_severity = {}
+    for severity in ["CRITICAL", "HIGH", "MEDIUM", "LOW"]:
+        count = len([c for c in cves if c["severity"] == severity])
+        by_severity[severity] = {
+            "count": count,
+            "percentage": round((count / total * 100), 1) if total > 0 else 0
+        }
+    top_10 = sorted(cves, key=lambda x: x.get("cvss_score") or 0, reverse=True)[:10]
+    return {"total": total, "data_source": source, "by_severity": by_severity, "top_10_most_dangerous": top_10}
+
+@app.get("/cves/trending")
+@app.get("/cves/trending")
+def get_trending():
+    cves, source = get_cves_from_source()
+    # Show most recent 20 CVEs sorted by severity
+    sorted_by_date = sorted(cves, key=lambda x: x.get("published_date") or "", reverse=True)
+    recent = sorted_by_date[:50]
+    # Then sort those by cvss score
+    trending = sorted(recent, key=lambda x: x.get("cvss_score") or 0, reverse=True)
+    return {
+        "total": len(trending),
+        "description": "Most recent CVEs sorted by severity",
+        "data": trending
+    }
+
+@app.get("/cves/timeline")
+def get_timeline():
+    cves, source = get_cves_from_source()
+    timeline = {}
+    for cve in cves:
+        date = cve.get("published_date", "")
+        if date:
+            month = date[:7]
+            if month not in timeline:
+                timeline[month] = {"month": month, "total": 0, "CRITICAL": 0, "HIGH": 0, "MEDIUM": 0, "LOW": 0}
+            timeline[month]["total"] += 1
+            severity = cve.get("severity", "")
+            if severity in timeline[month]:
+                timeline[month][severity] += 1
+    sorted_timeline = sorted(timeline.values(), key=lambda x: x["month"])
+    return {"total_months": len(sorted_timeline), "data": sorted_timeline}
+
+@app.get("/cves/{cve_id}/similar")
+def get_similar(cve_id: str):
+    cves, _ = get_cves_from_source()
+    target = None
+    for cve in cves:
+        if cve["cve_id"].upper() == cve_id.upper():
+            target = cve
+            break
+    if not target:
+        raise HTTPException(status_code=404, detail=f"{cve_id} not found")
+    keywords = [w.lower() for w in target["description"].split() if len(w) > 5]
+    similar = []
+    for cve in cves:
+        if cve["cve_id"] == target["cve_id"]:
+            continue
+        desc = cve["description"].lower()
+        matches = sum(1 for k in keywords if k in desc)
+        if matches >= 3:
+            similar.append({**cve, "similarity_score": matches})
+    similar = sorted(similar, key=lambda x: x["similarity_score"], reverse=True)[:10]
+    return {"cve_id": cve_id, "total_similar": len(similar), "data": similar}
+
+@app.get("/cves/{cve_id}")
+def get_cve(cve_id: str, remediation: bool = Query(False, description="Include AI remediation recommendation")):
+    cves, _ = get_cves_from_source()
+    for cve in cves:
+        if cve["cve_id"].upper() == cve_id.upper():
+            result = dict(cve)
+            if remediation:
+                result["remediation"] = generate_remediation(
+                    cve["cve_id"],
+                    cve["description"],
+                    cve["severity"]
+                )
+            return result
+    raise HTTPException(status_code=404, detail=f"{cve_id} not found")
