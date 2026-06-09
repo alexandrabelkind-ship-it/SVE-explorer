@@ -1,26 +1,50 @@
-# CVE Explorer — Data Layer (Person 1)
+# CVE Explorer
 
-Scrapes recent CVEs from the [NVD public API](https://nvd.nist.gov/developers/vulnerabilities)
-and stores them in a local SQLite database. Re-running is safe (upsert — no duplicates).
+An end-to-end system for collecting public CVE (vulnerability) data and exploring
+it in a simple web app.
 
-## What's here
+It has three layers, all built with **only the Python standard library** — no
+`pip install`, no frameworks. If you have Python 3, you can run the whole thing.
 
-- `scrape.py` — the scraper + storage script
-- `cves.db` — the SQLite database (the deliverable; rebuildable by running the script)
-
-## How to run
-
-No installs needed — uses only Python 3's standard library.
-
-```bash
-python3 scrape.py              # fetch 200 recent CVEs into cves.db
-python3 scrape.py --count 500  # fetch more
-python3 scrape.py --db my.db   # write to a different file
+```
+NVD public API ──> data/scrape.py ──> data/cves.db ──> app/app.py ──> browser
+   (collect)          (parse)           (store)          (serve UI)    (explore)
 ```
 
-## Database schema
+| Layer            | File             | What it does                                            |
+|------------------|------------------|---------------------------------------------------------|
+| Data collection  | `data/scrape.py` | Fetches CVEs from the NVD API and parses the JSON       |
+| Data storage     | `data/cves.db`   | SQLite database, one row per CVE (rebuildable anytime)  |
+| UI application   | `app/app.py`     | Web app to list, inspect, search & filter the CVEs      |
 
-Table `cves`, one row per CVE:
+## Quick start
+
+```bash
+# 1. Collect data (creates data/cves.db)
+python3 data/scrape.py
+
+# 2. Serve the UI, then open http://localhost:8000
+python3 app/app.py
+```
+
+That's it — no dependencies to install.
+
+---
+
+## Data collection — `data/scrape.py`
+
+Scrapes recent CVEs from the [NVD public API](https://nvd.nist.gov/developers/vulnerabilities)
+and stores them in SQLite. Re-running is safe: existing CVEs are updated, new ones
+inserted (an **upsert** — no duplicates).
+
+```bash
+python3 data/scrape.py              # fetch 200 CVEs into data/cves.db
+python3 data/scrape.py --count 500  # fetch more
+python3 data/scrape.py --db my.db   # write to a different file
+```
+
+For each CVE we keep just enough to identify it, judge its severity, understand it,
+and know when it landed:
 
 | column           | type | notes                                   |
 |------------------|------|-----------------------------------------|
@@ -31,22 +55,58 @@ Table `cves`, one row per CVE:
 | `cvss_score`     | REAL | 0.0–10.0                                |
 | `published_date` | TEXT | ISO date string                         |
 
-## For the backend dev (Person 2)
+**Reliability notes:**
+- The NVD API has no auth but rate-limits to ~5 requests / 30s without a key, so
+  the scraper pauses 6s between pages and retries on HTTP 429/403.
+- `cve_id` is the primary key, so re-running updates existing rows instead of
+  duplicating them (handles updates + dedup).
+- NVD's JSON is deeply nested; the parser digs out each field and falls back to a
+  safe default when something is missing (e.g. a CVE with no CVSS score).
 
-Just open `cves.db` with Python's `sqlite3` and query the `cves` table. Example:
+---
 
-```python
-import sqlite3
-conn = sqlite3.connect("cves.db")
-rows = conn.execute(
-    "SELECT cve_id, title, severity, cvss_score FROM cves "
-    "WHERE severity = ? ORDER BY cvss_score DESC", ("HIGH",)
-).fetchall()
+## UI application — `app/app.py`
+
+A small web app (Python's built-in `http.server`) that reads `data/cves.db` and
+lets a user explore it. **Read-only** — it never writes to the database.
+
+```bash
+python3 app/app.py                  # http://localhost:8000
+python3 app/app.py --port 5000      # different port
+python3 app/app.py --db path/to.db  # point at a different database
 ```
+
+What it offers:
+
+- **List view** — a sortable table of every CVE (ID, severity, score, summary, date).
+- **Detail view** — click any CVE ID for the full description and a link to its NVD page.
+- **Narrow down** — search by CVE ID or keyword, filter by severity, sort by score / date / ID.
+- **Insights** — a stats strip showing totals and counts per severity.
+- **JSON API** — `GET /api/cves?q=...&severity=...` returns the same data as JSON,
+  for anyone who wants the raw records.
+
+Routes:
+
+| Route                | Purpose                          |
+|----------------------|----------------------------------|
+| `/`                  | List page with search/filter/sort |
+| `/cve/<CVE-ID>`      | Detail page for one CVE          |
+| `/api/cves`          | JSON results (honors the same query params) |
+
+---
+
+## Design decisions
+
+- **Zero dependencies.** Both layers use only the standard library, so the project
+  runs anywhere Python does — easy for teammates and graders to run.
+- **SQLite for storage.** A single self-contained file; perfect for this scale, no
+  server to set up, and trivially queryable from any language.
+- **Scraper owns writes, UI is read-only.** Clean separation: you can re-scrape
+  while the app is running, and the app can never corrupt the data.
+- **Safe by construction.** All UI queries are parameterized and sort columns are
+  whitelisted, so user input can't inject SQL.
 
 ## Notes
 
-- The NVD API has no auth but rate-limits to ~5 requests / 30s without a key,
-  so the script pauses 6s between pages and retries on 429/403.
-- `cve_id` is the primary key, so re-running updates existing rows instead of
-  duplicating them.
+- `data/cves.db` is git-ignored — it's a build artifact, regenerated by running the
+  scraper. Commit the code, not the database.
