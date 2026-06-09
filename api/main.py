@@ -6,6 +6,9 @@ from datetime import datetime, timedelta
 import sqlite3
 import os
 import time
+import json
+import urllib.parse
+import urllib.request
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -212,6 +215,66 @@ def get_similar(cve_id: str):
             similar.append({**cve, "similarity_score": matches})
     similar = sorted(similar, key=lambda x: x["similarity_score"], reverse=True)[:10]
     return {"cve_id": cve_id, "total_similar": len(similar), "data": similar}
+
+def fetch_ghsa_for_cve(cve_id: str) -> list:
+    """Live lookup of GitHub Advisory Database entries for a CVE.
+
+    Unauthenticated (60 req/hr); uses GH_TOKEN if present. Returns [] on any error
+    so the explore endpoint degrades gracefully.
+    """
+    url = f"https://api.github.com/advisories?{urllib.parse.urlencode({'cve_id': cve_id})}"
+    headers = {"User-Agent": "cve-explorer/2.0", "Accept": "application/vnd.github+json",
+               "X-GitHub-Api-Version": "2022-11-28"}
+    token = os.getenv("GH_TOKEN") or os.getenv("GITHUB_TOKEN")
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    try:
+        req = urllib.request.Request(url, headers=headers)
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            advisories = json.loads(resp.read().decode("utf-8"))
+        out = []
+        for adv in advisories:
+            packages = []
+            for v in adv.get("vulnerabilities", []) or []:
+                pkg = v.get("package") or {}
+                if pkg.get("ecosystem") and pkg.get("name"):
+                    packages.append(f"{pkg['ecosystem']}:{pkg['name']}")
+            out.append({
+                "ghsa_id": adv.get("ghsa_id"),
+                "summary": adv.get("summary"),
+                "severity": (adv.get("severity") or "").upper(),
+                "packages": packages,
+                "url": adv.get("html_url"),
+            })
+        return out
+    except Exception as e:
+        print(f"[explore] GHSA lookup failed for {cve_id}: {e}")
+        return []
+
+
+@app.get("/cves/{cve_id}/explore")
+def explore_cve(cve_id: str):
+    """Cross-reference a CVE across authoritative sources + a live GHSA lookup.
+
+    NVD and CVE.org are deterministic links (no network call); GHSA is fetched live;
+    web link-outs are pre-built search URLs so the UI can offer 'search the web'.
+    """
+    cid = cve_id.upper()
+    return {
+        "cve_id": cid,
+        "sources": {
+            "nvd": f"https://nvd.nist.gov/vuln/detail/{cid}",
+            "cveorg": f"https://www.cve.org/CVERecord?id={cid}",
+            "mitre": f"https://cve.mitre.org/cgi-bin/cvename.cgi?name={cid}",
+        },
+        "ghsa": fetch_ghsa_for_cve(cid),
+        "web": [
+            {"label": "Google", "url": f"https://www.google.com/search?q={urllib.parse.quote(cid)}"},
+            {"label": "DuckDuckGo", "url": f"https://duckduckgo.com/?q={urllib.parse.quote(cid)}"},
+            {"label": "Exploit-DB", "url": f"https://www.exploit-db.com/search?cve={urllib.parse.quote(cid)}"},
+        ],
+    }
+
 
 @app.get("/cves/{cve_id}")
 def get_cve(cve_id: str, remediation: bool = Query(False, description="Include AI remediation recommendation")):

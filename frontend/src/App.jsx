@@ -103,6 +103,82 @@ function AISummary({ cveId }) {
   );
 }
 
+function ExploreSources({ cveId }) {
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    let alive = true;
+    setLoading(true);
+    fetch(`/cves/${cveId}/explore`)
+      .then(r => (r.ok ? r.json() : null))
+      .then(d => { if (alive) { setData(d); setLoading(false); } })
+      .catch(() => { if (alive) setLoading(false); });
+    return () => { alive = false; };
+  }, [cveId]);
+
+  const linkStyle = {
+    display: "inline-flex", alignItems: "center", gap: 5,
+    background: "#f5f5f7", border: "1px solid #e5e5ea", borderRadius: 8,
+    padding: "6px 12px", fontSize: 12, fontWeight: 600, color: "#1d1d1f",
+    textDecoration: "none", whiteSpace: "nowrap",
+  };
+
+  return (
+    <div style={{ marginTop: 24 }}>
+      <p style={s.modalDescLabel}>CROSS-REFERENCES</p>
+      {loading && <p style={{ color: "#8e8e93", fontSize: 13 }}>Looking up sources…</p>}
+      {data && (
+        <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+            {Object.entries(data.sources || {}).map(([name, url]) => (
+              <a key={name} href={url} target="_blank" rel="noopener noreferrer" style={linkStyle}>
+                🔗 {name.toUpperCase()} ↗
+              </a>
+            ))}
+          </div>
+
+          {data.ghsa && data.ghsa.length > 0 && (
+            <div>
+              <p style={{ color: "#8e8e93", fontSize: 11, fontWeight: 600, letterSpacing: "0.04em", margin: "0 0 8px" }}>
+                GITHUB ADVISORIES · AFFECTED PACKAGES
+              </p>
+              <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                {data.ghsa.map(g => (
+                  <a key={g.ghsa_id} href={g.url} target="_blank" rel="noopener noreferrer"
+                     style={{ ...linkStyle, justifyContent: "space-between", padding: "10px 12px" }}>
+                    <span style={{ display: "flex", flexDirection: "column", gap: 3, alignItems: "flex-start" }}>
+                      <span style={{ fontFamily: "monospace", fontSize: 11, color: "#0071e3" }}>{g.ghsa_id}</span>
+                      <span style={{ fontWeight: 500, color: "#3a3a3c", whiteSpace: "normal" }}>{g.summary}</span>
+                      {g.packages?.length > 0 && (
+                        <span style={{ display: "flex", gap: 5, flexWrap: "wrap", marginTop: 2 }}>
+                          {g.packages.slice(0, 6).map(p => (
+                            <span key={p} style={{ background: "#312e81", color: "#c7d2fe", borderRadius: 6, padding: "2px 7px", fontSize: 10, fontFamily: "monospace" }}>{p}</span>
+                          ))}
+                        </span>
+                      )}
+                    </span>
+                  </a>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {data.web && data.web.length > 0 && (
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+              {data.web.map(w => (
+                <a key={w.label} href={w.url} target="_blank" rel="noopener noreferrer" style={linkStyle}>
+                  ⌕ {w.label} ↗
+                </a>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function GPTButton({ cve }) {
   const severity = (cve.severity || getSeverity(cve.cvss_score)).toUpperCase();
   const prompt = `I need help understanding and remediating the following CVE vulnerability:
@@ -231,6 +307,8 @@ function CveModal({ cve, onClose }) {
           </div>
 
           <AISummary cveId={cve.cve_id} />
+
+          <ExploreSources cveId={cve.cve_id} />
 
           <div style={{ ...s.modalFooter, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
             <a href={`https://nvd.nist.gov/vuln/detail/${cve.cve_id}`} target="_blank" rel="noopener noreferrer" style={s.nvdLink}>
