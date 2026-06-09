@@ -68,12 +68,12 @@ function AISummary({ cveId }) {
   const generate = async () => {
     setLoading(true); setError(null);
     try {
-      const res = await fetch(`/cves/${cveId}/summary`);
+      const res = await fetch(`/cves/${cveId}?remediation=true`);
       if (!res.ok) throw new Error();
       const data = await res.json();
-      setSummary(data.summary);
+      setSummary(data.remediation);
     } catch {
-      setError("Could not generate summary. Make sure the backend has an API key configured.");
+      setError("Could not generate remediation. Make sure the backend has an API key configured.");
     } finally { setLoading(false); }
   };
 
@@ -81,9 +81,9 @@ function AISummary({ cveId }) {
     <div style={s.aiBox}>
       <div style={s.aiHeader}>
         <span style={{ fontSize: 14 }}>✦</span>
-        <span style={s.aiLabel}>AI PLAIN-ENGLISH SUMMARY</span>
+        <span style={s.aiLabel}>AI REMEDIATION</span>
       </div>
-      <p style={s.aiText}>{summary}</p>
+      <p style={{ ...s.aiText, whiteSpace: "pre-line" }}>{summary}</p>
     </div>
   );
 
@@ -97,7 +97,7 @@ function AISummary({ cveId }) {
         border: "none", borderRadius: 10, padding: "11px 20px",
         fontSize: 14, fontWeight: 600, display: "flex", alignItems: "center", gap: 8,
       }}>
-        {loading ? <><LoadingDots /> Generating…</> : <>✦ Explain this CVE in plain English</>}
+        {loading ? <><LoadingDots /> Generating…</> : <>✦ Get AI Remediation</>}
       </button>
     </div>
   );
@@ -332,25 +332,33 @@ export default function App() {
 
   const fetchCves = useCallback(async (q, sev) => {
     setLoading(true); setError(null);
-    try {
-      const params = new URLSearchParams();
-      if (q) params.set("search", q);
-      if (sev && sev !== "ALL") params.set("severity", sev);
-      const res = await fetch(`/cves?${params}`);
-      if (!res.ok) throw new Error();
-      const data = await res.json();
-      const list = Array.isArray(data) ? data : data.cves || [];
-      setCves(list);
-      try {
-        const sr = await fetch("/stats");
-        if (sr.ok) setStats(await sr.json());
-        else computeStats(list);
-      } catch { computeStats(list); }
-    } catch {
-      setError("Cannot reach the API. Make sure the FastAPI backend is running on port 8000.");
-      setCves([]);
-    } finally { setLoading(false); }
-  }, []);
+ try {
+  const params = new URLSearchParams();
+  if (q) params.set("search", q);
+  if (sev && sev !== "ALL") params.set("severity", sev);
+  const res = await fetch(`/cves?${params}`);
+  if (!res.ok) throw new Error();
+  const data = await res.json();
+  const list = Array.isArray(data) ? data : data.data || data.cves || [];
+  setCves(list);
+  try {
+    const sr = await fetch("/stats");
+    if (sr.ok) {
+      const statsData = await sr.json();
+      setStats({
+        CRITICAL: statsData.by_severity?.CRITICAL || 0,
+        HIGH: statsData.by_severity?.HIGH || 0,
+        MEDIUM: statsData.by_severity?.MEDIUM || 0,
+        LOW: statsData.by_severity?.LOW || 0,
+        total: statsData.total || 0,
+      });
+    } else computeStats(list);
+  } catch { computeStats(list); }
+} catch {
+  setError("Cannot reach the API. Make sure the FastAPI backend is running on port 8000.");
+  setCves([]);
+} finally { setLoading(false); }
+}, []);
 
   useEffect(() => { fetchCves("", "ALL"); }, [fetchCves]);
 
@@ -378,139 +386,106 @@ export default function App() {
   return (
     <>
       <style>{globalStyles}</style>
-
-        {/* Side images */}
         <div style={{ position: "fixed", left: 0, top: 0, height: "100vh", width: 180, display: "flex", alignItems: "center", justifyContent: "center", pointerEvents: "none", zIndex: 0 }}>
-        <img src={surfImg} alt="" style={{ width: 150, opacity: 0.18, filter: "saturate(0.8)" }} />
+          <img src={surfImg} alt="" style={{ width: 150, opacity: 0.18, filter: "saturate(0.8)" }} />
         </div>
         <div style={{ position: "fixed", right: 0, top: 0, height: "100vh", width: 180, display: "flex", alignItems: "center", justifyContent: "center", pointerEvents: "none", zIndex: 0 }}>
-        <img src={surfImg} alt="" style={{ width: 150, opacity: 0.18, filter: "saturate(0.8) scaleX(-1)", transform: "scaleX(-1)" }} />
+          <img src={surfImg} alt="" style={{ width: 150, opacity: 0.18, filter: "saturate(0.8) scaleX(-1)", transform: "scaleX(-1)" }} />
         </div>
 
         <div style={{ ...s.page, position: "relative", zIndex: 1 }}>
-
-        {/* Header */}
-        <div style={{ marginBottom: 36, display: "flex", justifyContent: "space-between", alignItems: "flex-start", flexWrap: "wrap", gap: 16 }}>
-          <div>
-            <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 6 }}>
-              <div style={s.liveIndicator} />
-              <span style={s.liveLabel}>LIVE CVE INTELLIGENCE</span>
+          <div style={{ marginBottom: 36, display: "flex", justifyContent: "space-between", alignItems: "flex-start", flexWrap: "wrap", gap: 16 }}>
+            <div>
+              <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 6 }}>
+                <div style={s.liveIndicator} />
+                <span style={s.liveLabel}>LIVE CVE INTELLIGENCE</span>
+              </div>
+              <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
+                <span style={{ fontSize: 38 }}>🏄</span>
+                <h1 style={s.h1}>CVE Explorer</h1>
+              </div>
+              <p style={s.subtitle}>Real-time vulnerabilities from the National Vulnerability Database.</p>
             </div>
-            <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
-            <span style={{ fontSize: 38 }}>🏄</span>
-            <h1 style={s.h1}>CVE Explorer</h1>
-            </div>
-            <p style={s.subtitle}>Real-time vulnerabilities from the National Vulnerability Database.</p>
-          </div>
-          <button
-            onClick={handleScrape}
-            disabled={scraping}
-            style={{
+            <button onClick={handleScrape} disabled={scraping} style={{
               background: scraping ? "#f5f5f7" : "#1d1d1f",
               color: scraping ? "#aeaeb2" : "#ffffff",
-              border: "none", borderRadius: 12,
-              padding: "12px 22px", fontSize: 14, fontWeight: 600,
-              cursor: scraping ? "not-allowed" : "pointer",
+              border: "none", borderRadius: 12, padding: "12px 22px",
+              fontSize: 14, fontWeight: 600, cursor: scraping ? "not-allowed" : "pointer",
               display: "flex", alignItems: "center", gap: 8,
-              boxShadow: scraping ? "none" : "0 2px 8px rgba(0,0,0,0.15)",
-              transition: "all 0.15s",
-            }}
-          >
-            {scraping ? <><LoadingDots /> Fetching new data…</> : <>↻ Refresh CVE Data</>}
-          </button>
+              boxShadow: scraping ? "none" : "0 2px 8px rgba(0,0,0,0.15)", transition: "all 0.15s",
+            }}>
+              {scraping ? <><LoadingDots /> Fetching new data…</> : <>↻ Refresh CVE Data</>}
+            </button>
+          </div>
+
+          <div style={s.dashboard}>
+            <StatCard label="CRITICAL" count={stats.CRITICAL} severity="CRITICAL" />
+            <StatCard label="HIGH" count={stats.HIGH} severity="HIGH" />
+            <StatCard label="MEDIUM" count={stats.MEDIUM} severity="MEDIUM" />
+            <StatCard label="LOW" count={stats.LOW} severity="LOW" />
+            <div style={s.totalCard}>
+              <span style={s.totalCount}>{stats.total || cves.length}</span>
+              <span style={s.totalLabel}>TOTAL</span>
+            </div>
+          </div>
+
+          <div style={s.searchRow}>
+            <div style={s.searchBox}>
+              <span style={s.searchIcon}>⌕</span>
+              <input type="text" placeholder="Search by CVE ID, keyword, or technology…" value={search} onChange={e => handleSearch(e.target.value)} style={s.searchInput} />
+              {search && <button onClick={() => handleSearch("")} style={s.searchClear}>×</button>}
+            </div>
+          </div>
+
+          <div style={s.sortRow}>
+            <span style={{ color: "#8e8e93", fontSize: 12, fontWeight: 600, letterSpacing: "0.04em" }}>SORT</span>
+            {SORT_OPTIONS.map(opt => <SortButton key={opt.value} label={opt.label} value={opt.value} current={sortBy} onClick={setSortBy} />)}
+          </div>
+
+          <div style={s.filterRow2}>
+            <span style={{ color: "#8e8e93", fontSize: 12, fontWeight: 600, letterSpacing: "0.04em" }}>FILTER</span>
+            {["ALL", "CRITICAL", "HIGH", "MEDIUM", "LOW"].map(sev => {
+              const cfg = sev === "ALL" ? null : SEVERITY_CONFIG[sev];
+              return <FilterButton key={sev} label={sev} value={sev} current={severity} color={cfg?.color} onClick={handleSeverity} />;
+            })}
+          </div>
+
+          {!loading && !error && (
+            <p style={s.resultsCount}>
+              {displayed.length === 0 ? "No results" : `${displayed.length} vulnerabilit${displayed.length === 1 ? "y" : "ies"}${search ? ` matching "${search}"` : ""}${severity !== "ALL" ? ` · ${severity}` : ""}`}
+            </p>
+          )}
+
+          {error && (
+            <div style={s.errorBox}>
+              <p style={s.errorTitle}>⚠ Connection Error</p>
+              <p style={s.errorMsg}>{error}</p>
+              <button onClick={() => fetchCves(search, severity)} style={s.retryBtn}>Retry</button>
+            </div>
+          )}
+
+          {loading && (
+            <div style={s.cveList}>
+              {[...Array(6)].map((_, i) => (
+                <div key={i} style={{ background: "#ffffff", borderRadius: 14, height: 80, border: "1px solid #e5e5ea", borderLeft: "4px solid #e5e5ea", opacity: 1 - i * 0.12, animation: "pulse 1.5s ease-in-out infinite" }} />
+              ))}
+            </div>
+          )}
+
+          {!loading && !error && displayed.length === 0 && (
+            <div style={s.emptyState}>
+              <div style={s.emptyIcon}>🔍</div>
+              <p style={s.emptyTitle}>No vulnerabilities found</p>
+              <p style={s.emptyMsg}>{search ? `No results for "${search}"` : "No CVEs yet — click Refresh CVE Data to fetch from NVD"}</p>
+            </div>
+          )}
+
+          {!loading && !error && displayed.length > 0 && (
+            <div style={s.cveList}>
+              {displayed.map(cve => <CveCard key={cve.cve_id} cve={cve} onClick={setSelected} />)}
+            </div>
+          )}
         </div>
-
-        {/* Dashboard */}
-        <div style={s.dashboard}>
-          <StatCard label="CRITICAL" count={stats.CRITICAL} severity="CRITICAL" />
-          <StatCard label="HIGH" count={stats.HIGH} severity="HIGH" />
-          <StatCard label="MEDIUM" count={stats.MEDIUM} severity="MEDIUM" />
-          <StatCard label="LOW" count={stats.LOW} severity="LOW" />
-          <div style={s.totalCard}>
-            <span style={s.totalCount}>{stats.total || cves.length}</span>
-            <span style={s.totalLabel}>TOTAL</span>
-          </div>
-        </div>
-
-        {/* Search */}
-        <div style={s.searchRow}>
-          <div style={s.searchBox}>
-            <span style={s.searchIcon}>⌕</span>
-            <input
-              type="text"
-              placeholder="Search by CVE ID, keyword, or technology…"
-              value={search}
-              onChange={e => handleSearch(e.target.value)}
-              style={s.searchInput}
-            />
-            {search && <button onClick={() => handleSearch("")} style={s.searchClear}>×</button>}
-          </div>
-        </div>
-
-        {/* Sort */}
-        <div style={s.sortRow}>
-        <span style={{ color: "#8e8e93", fontSize: 12, fontWeight: 600, letterSpacing: "0.04em" }}>SORT</span>
-        {SORT_OPTIONS.map(opt => (
-            <SortButton key={opt.value} label={opt.label} value={opt.value} current={sortBy} onClick={setSortBy} />
-        ))}
-        </div>
-
-        {/* Filter */}
-        <div style={s.filterRow2}>
-        <span style={{ color: "#8e8e93", fontSize: 12, fontWeight: 600, letterSpacing: "0.04em" }}>FILTER</span>
-        {["ALL", "CRITICAL", "HIGH", "MEDIUM", "LOW"].map(sev => {
-            const cfg = sev === "ALL" ? null : SEVERITY_CONFIG[sev];
-            return (
-            <FilterButton
-                key={sev} label={sev} value={sev}
-                current={severity} color={cfg?.color}
-                onClick={handleSeverity}
-            />
-            );
-        })}
-        </div>
-
-        {/* Count */}
-        {!loading && !error && (
-          <p style={s.resultsCount}>
-            {displayed.length === 0 ? "No results" : `${displayed.length} vulnerabilit${displayed.length === 1 ? "y" : "ies"}${search ? ` matching "${search}"` : ""}${severity !== "ALL" ? ` · ${severity}` : ""}`}
-          </p>
-        )}
-
-        {/* Error */}
-        {error && (
-          <div style={s.errorBox}>
-            <p style={s.errorTitle}>⚠ Connection Error</p>
-            <p style={s.errorMsg}>{error}</p>
-            <button onClick={() => fetchCves(search, severity)} style={s.retryBtn}>Retry</button>
-          </div>
-        )}
-
-        {/* Loading skeletons */}
-        {loading && (
-          <div style={s.cveList}>
-            {[...Array(6)].map((_, i) => (
-              <div key={i} style={{ background: "#ffffff", borderRadius: 14, height: 80, border: "1px solid #e5e5ea", borderLeft: "4px solid #e5e5ea", opacity: 1 - i * 0.12, animation: "pulse 1.5s ease-in-out infinite" }} />
-            ))}
-          </div>
-        )}
-
-        {/* Empty */}
-        {!loading && !error && displayed.length === 0 && (
-          <div style={s.emptyState}>
-            <div style={s.emptyIcon}>🔍</div>
-            <p style={s.emptyTitle}>No vulnerabilities found</p>
-            <p style={s.emptyMsg}>{search ? `No results for "${search}"` : "No CVEs yet — click Refresh CVE Data to fetch from NVD"}</p>
-          </div>
-        )}
-
-        {/* List */}
-        {!loading && !error && displayed.length > 0 && (
-          <div style={s.cveList}>
-            {displayed.map(cve => <CveCard key={cve.cve_id} cve={cve} onClick={setSelected} />)}
-          </div>
-        )}
-      </div>
 
       {selected && <CveModal cve={selected} onClose={() => setSelected(null)} />}
     </>
