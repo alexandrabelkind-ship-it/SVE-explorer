@@ -2,6 +2,8 @@
 *.db
 *.sqlite
 *.sqlite3
+# ...except the committed CVE dataset
+!data/cves.db
 
 # Python
 __pycache__/
