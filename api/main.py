@@ -16,7 +16,6 @@ load_dotenv()
 
 from azure_client import AzureAIFoundryClient
 
-# DB change detection - initialized on startup
 def get_db_hash():
     db_path = "../data/cves.db"
     if os.path.exists(db_path):
@@ -29,13 +28,12 @@ db_hash = get_db_hash()
 START_TIME = time.time()
 ai_client = AzureAIFoundryClient()
 DEPLOYMENT = "gpt-5.4"
-
 remediation_cache: dict = {}
 
 app = FastAPI(
     title="CVE Explorer API",
     description="API for exploring CVE vulnerability data with AI-powered remediation",
-    version="2.0.0"
+    version="3.0.0"
 )
 
 app.add_middleware(
@@ -46,11 +44,11 @@ app.add_middleware(
 )
 
 MOCK_CVES = [
-    {"cve_id": "CVE-2024-1234", "title": "Apache Buffer Overflow", "description": "Buffer overflow in Apache HTTP Server allows remote code execution.", "severity": "CRITICAL", "cvss_score": 9.8, "published_date": "2024-01-15"},
-    {"cve_id": "CVE-2024-5678", "title": "MySQL SQL Injection", "description": "SQL injection vulnerability in MySQL allows data exfiltration.", "severity": "HIGH", "cvss_score": 7.5, "published_date": "2024-02-20"},
-    {"cve_id": "CVE-2024-9999", "title": "Nginx XSS", "description": "Cross-site scripting in nginx web server.", "severity": "MEDIUM", "cvss_score": 5.3, "published_date": "2024-03-10"},
-    {"cve_id": "CVE-2024-0001", "title": "OpenSSL Info Disclosure", "description": "Information disclosure in OpenSSL.", "severity": "LOW", "cvss_score": 2.1, "published_date": "2024-04-01"},
-    {"cve_id": "CVE-2024-3333", "title": "Log4j RCE", "description": "Remote code execution in Log4j library affects millions of systems.", "severity": "CRITICAL", "cvss_score": 10.0, "published_date": "2024-05-05"},
+    {"cve_id": "CVE-2024-1234", "title": "Apache Buffer Overflow", "description": "Buffer overflow in Apache HTTP Server allows remote code execution.", "severity": "CRITICAL", "cvss_score": 9.8, "published_date": "2024-01-15", "source": "nvd"},
+    {"cve_id": "CVE-2024-5678", "title": "MySQL SQL Injection", "description": "SQL injection vulnerability in MySQL allows data exfiltration.", "severity": "HIGH", "cvss_score": 7.5, "published_date": "2024-02-20", "source": "nvd"},
+    {"cve_id": "CVE-2024-9999", "title": "Nginx XSS", "description": "Cross-site scripting in nginx web server.", "severity": "MEDIUM", "cvss_score": 5.3, "published_date": "2024-03-10", "source": "ghsa"},
+    {"cve_id": "CVE-2024-0001", "title": "OpenSSL Info Disclosure", "description": "Information disclosure in OpenSSL.", "severity": "LOW", "cvss_score": 2.1, "published_date": "2024-04-01", "source": "cveorg"},
+    {"cve_id": "CVE-2024-3333", "title": "Log4j RCE", "description": "Remote code execution in Log4j library affects millions of systems.", "severity": "CRITICAL", "cvss_score": 10.0, "published_date": "2024-05-05", "source": "nvd,ghsa"},
 ]
 
 def get_cves_from_source():
@@ -64,6 +62,23 @@ def get_cves_from_source():
         conn.close()
         return [dict(row) for row in rows], "sqlite"
     return MOCK_CVES, "mock"
+
+def get_available_sources():
+    """Get all unique sources from the DB."""
+    db_path = "../data/cves.db"
+    if os.path.exists(db_path):
+        conn = sqlite3.connect(db_path)
+        cursor = conn.cursor()
+        cursor.execute("SELECT DISTINCT source FROM cves WHERE source IS NOT NULL")
+        rows = cursor.fetchall()
+        conn.close()
+        sources = set()
+        for row in rows:
+            if row[0]:
+                for s in row[0].split(","):
+                    sources.add(s.strip())
+        return sorted(sources)
+    return ["nvd", "ghsa", "cveorg"]
 
 def generate_remediation(cve_id: str, description: str, severity: str) -> str:
     if cve_id in remediation_cache:
@@ -94,7 +109,12 @@ Respond with ONLY the bullet points, no intro text. Each bullet should be action
 
 @app.get("/")
 def root():
-    return {"message": "CVE Explorer API is running!", "docs": "/docs", "version": "2.0.0"}
+    return {
+        "message": "CVE Explorer API is running!",
+        "docs": "/docs",
+        "version": "3.0.0",
+        "sources": get_available_sources()
+    }
 
 @app.get("/health")
 def health():
@@ -105,18 +125,26 @@ def health():
         "data_source": source,
         "cached_remediations": len(remediation_cache),
         "db_hash": db_hash,
+        "available_sources": get_available_sources(),
     }
 
 @app.get("/stats")
 def get_stats():
     cves, source = get_cves_from_source()
     scores = [c["cvss_score"] for c in cves if c.get("cvss_score") is not None]
+    by_source = {}
+    for cve in cves:
+        src = cve.get("source") or "unknown"
+        for s in src.split(","):
+            s = s.strip()
+            by_source[s] = by_source.get(s, 0) + 1
     return {
         "total": len(cves),
         "data_source": source,
         "average_cvss_score": round(sum(scores) / len(scores), 2) if scores else 0,
         "max_cvss_score": max(scores) if scores else 0,
-        "by_severity": {s: len([c for c in cves if c["severity"] == s]) for s in ["CRITICAL", "HIGH", "MEDIUM", "LOW"]}
+        "by_severity": {s: len([c for c in cves if c.get("severity") == s]) for s in ["CRITICAL", "HIGH", "MEDIUM", "LOW"]},
+        "by_source": by_source,
     }
 
 @app.get("/cache/stats")
@@ -140,25 +168,41 @@ def refresh():
 @app.get("/cves")
 def get_cves(
     severity: Optional[str] = Query(None, description="Filter by severity: CRITICAL, HIGH, MEDIUM, LOW"),
+    source: Optional[str] = Query(None, description="Filter by source: nvd, ghsa, cveorg"),
     search: Optional[str] = Query(None, description="Search in CVE ID, title or description"),
     sort: Optional[str] = Query("date_desc", description="Sort: score_desc, score_asc, date_desc, date_asc"),
     from_date: Optional[str] = Query(None, description="Filter from date: YYYY-MM-DD"),
     to_date: Optional[str] = Query(None, description="Filter to date: YYYY-MM-DD"),
+    vendor: Optional[str] = Query(None, description="Filter by vendor name"),
     limit: int = Query(50, description="Max results to return"),
     offset: int = Query(0, description="Pagination offset")
 ):
-    cves, source = get_cves_from_source()
+    cves, db_source = get_cves_from_source()
+
     if severity:
-        cves = [c for c in cves if c["severity"].upper() == severity.upper()]
+        cves = [c for c in cves if (c.get("severity") or "").upper() == severity.upper()]
+
+    if source:
+        cves = [c for c in cves if source.lower() in (c.get("source") or "").lower()]
+
+    if vendor:
+        cves = [c for c in cves if vendor.lower() in (c.get("vendors") or "").lower()]
+
     if search:
         cves = [c for c in cves if
                 search.lower() in c["cve_id"].lower() or
-                search.lower() in c.get("title", "").lower() or
-                search.lower() in c["description"].lower()]
+                search.lower() in (c.get("title") or "").lower() or
+                search.lower() in (c.get("description") or "").lower() or
+                search.lower() in (c.get("vendors") or "").lower() or
+                search.lower() in (c.get("products") or "").lower() or
+                search.lower() in (c.get("affected_packages") or "").lower()]
+
     if from_date:
-        cves = [c for c in cves if c["published_date"] >= from_date]
+        cves = [c for c in cves if (c.get("published_date") or "") >= from_date]
+
     if to_date:
-        cves = [c for c in cves if c["published_date"] <= to_date]
+        cves = [c for c in cves if (c.get("published_date") or "") <= to_date]
+
     if sort == "score_desc":
         cves = sorted(cves, key=lambda x: x.get("cvss_score") or 0, reverse=True)
     elif sort == "score_asc":
@@ -167,9 +211,10 @@ def get_cves(
         cves = sorted(cves, key=lambda x: x.get("published_date") or "")
     else:
         cves = sorted(cves, key=lambda x: x.get("published_date") or "", reverse=True)
+
     total = len(cves)
     cves = cves[offset:offset + limit]
-    return {"total": total, "offset": offset, "limit": limit, "data_source": source, "data": cves}
+    return {"total": total, "offset": offset, "limit": limit, "data_source": db_source, "data": cves}
 
 @app.get("/cves/summary")
 def get_summary():
@@ -177,7 +222,7 @@ def get_summary():
     total = len(cves)
     by_severity = {}
     for severity in ["CRITICAL", "HIGH", "MEDIUM", "LOW"]:
-        count = len([c for c in cves if c["severity"] == severity])
+        count = len([c for c in cves if c.get("severity") == severity])
         by_severity[severity] = {
             "count": count,
             "percentage": round((count / total * 100), 1) if total > 0 else 0
@@ -220,12 +265,12 @@ def get_similar(cve_id: str):
             break
     if not target:
         raise HTTPException(status_code=404, detail=f"{cve_id} not found")
-    keywords = [w.lower() for w in target["description"].split() if len(w) > 5]
+    keywords = [w.lower() for w in (target.get("description") or "").split() if len(w) > 5]
     similar = []
     for cve in cves:
         if cve["cve_id"] == target["cve_id"]:
             continue
-        desc = cve["description"].lower()
+        desc = (cve.get("description") or "").lower()
         matches = sum(1 for k in keywords if k in desc)
         if matches >= 3:
             similar.append({**cve, "similarity_score": matches})
@@ -233,11 +278,6 @@ def get_similar(cve_id: str):
     return {"cve_id": cve_id, "total_similar": len(similar), "data": similar}
 
 def fetch_ghsa_for_cve(cve_id: str) -> list:
-    """Live lookup of GitHub Advisory Database entries for a CVE.
-
-    Unauthenticated (60 req/hr); uses GH_TOKEN if present. Returns [] on any error
-    so the explore endpoint degrades gracefully.
-    """
     url = f"https://api.github.com/advisories?{urllib.parse.urlencode({'cve_id': cve_id})}"
     headers = {"User-Agent": "cve-explorer/2.0", "Accept": "application/vnd.github+json",
                "X-GitHub-Api-Version": "2022-11-28"}
@@ -267,14 +307,8 @@ def fetch_ghsa_for_cve(cve_id: str) -> list:
         print(f"[explore] GHSA lookup failed for {cve_id}: {e}")
         return []
 
-
 @app.get("/cves/{cve_id}/explore")
 def explore_cve(cve_id: str):
-    """Cross-reference a CVE across authoritative sources + a live GHSA lookup.
-
-    NVD and CVE.org are deterministic links (no network call); GHSA is fetched live;
-    web link-outs are pre-built search URLs so the UI can offer 'search the web'.
-    """
     cid = cve_id.upper()
     return {
         "cve_id": cid,
@@ -291,7 +325,6 @@ def explore_cve(cve_id: str):
         ],
     }
 
-
 @app.get("/cves/{cve_id}")
 def get_cve(cve_id: str, remediation: bool = Query(False, description="Include AI remediation recommendation")):
     cves, _ = get_cves_from_source()
@@ -301,8 +334,8 @@ def get_cve(cve_id: str, remediation: bool = Query(False, description="Include A
             if remediation:
                 result["remediation"] = generate_remediation(
                     cve["cve_id"],
-                    cve["description"],
-                    cve["severity"]
+                    cve.get("description") or "",
+                    cve.get("severity") or "UNKNOWN"
                 )
             return result
     raise HTTPException(status_code=404, detail=f"{cve_id} not found")
