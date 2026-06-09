@@ -55,7 +55,7 @@ def get_conn():
     return conn
 
 
-def query_cves(search="", severity="", sort="cvss_score", limit=500):
+def query_cves(search="", severity="", vendor="", sort="cvss_score", limit=500):
     """Return a list of CVE rows, filtered/sorted by the UI's controls.
 
     Built with parameterized queries (the ? placeholders) so user input can
@@ -77,8 +77,13 @@ def query_cves(search="", severity="", sort="cvss_score", limit=500):
     if severity:
         where.append("severity = ?")
         params.append(severity)
+    if vendor:
+        # Match the affected vendor or product (both stored as text).
+        where.append("(vendors LIKE ? OR products LIKE ?)")
+        params += [f"%{vendor}%", f"%{vendor}%"]
 
-    sql = "SELECT cve_id, title, description, severity, cvss_score, published_date FROM cves"
+    sql = ("SELECT cve_id, title, description, severity, cvss_score, "
+           "published_date, vendors, products FROM cves")
     if where:
         sql += " WHERE " + " AND ".join(where)
     # NULL cvss_score sorts last so the worst CVEs surface first.
@@ -97,8 +102,8 @@ def get_cve(cve_id):
     conn = get_conn()
     try:
         row = conn.execute(
-            "SELECT cve_id, title, description, severity, cvss_score, published_date "
-            "FROM cves WHERE cve_id = ?",
+            "SELECT cve_id, title, description, severity, cvss_score, "
+            "published_date, vendors, products FROM cves WHERE cve_id = ?",
             (cve_id,),
         ).fetchone()
         return dict(row) if row else None
@@ -160,6 +165,9 @@ td.score { font-variant-numeric: tabular-nums; font-weight: 600; }
     font-weight: 700; color: #fff; letter-spacing: .03em; }
 .badge-unknown { background: #475569; }
 .desc { color: #cbd5e1; }
+td.vendor { color: #a5b4fc; font-size: 13px; }
+.chips { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 4px; }
+.chip { background: #312e81; color: #c7d2fe; border-radius: 6px; padding: 2px 8px; font-size: 12px; }
 .detail-card { background: #1e293b; border-radius: 10px; padding: 24px; margin-top: 16px; }
 .detail-card .id { font-size: 28px; font-weight: 700; margin: 0 0 8px; }
 .meta { display: flex; gap: 24px; flex-wrap: wrap; margin: 16px 0; }
@@ -169,7 +177,7 @@ td.score { font-variant-numeric: tabular-nums; font-weight: 600; }
 """
 
 
-def render_list(rows, stats, search, severity, sort):
+def render_list(rows, stats, search, severity, vendor, sort):
     sev = stats["by_severity"]
     stat_cells = "".join(
         f'<div class="stat"><div class="num">{sev.get(s, 0)}</div>'
@@ -197,18 +205,22 @@ def render_list(rows, stats, search, severity, sort):
             score = "—" if r["cvss_score"] is None else f'{r["cvss_score"]:.1f}'
             pub = (r["published_date"] or "")[:10]
             title = html.escape(r["title"] or "")
+            # Show the affected vendor(s); truncate if there are many.
+            vend = r["vendors"] or ""
+            vend_short = html.escape(vend[:40] + ("…" if len(vend) > 40 else "")) or "—"
             body_rows += (
                 f"<tr>"
                 f'<td><a href="/cve/{html.escape(r["cve_id"])}">{html.escape(r["cve_id"])}</a></td>'
                 f"<td>{severity_badge(r['severity'])}</td>"
                 f'<td class="score">{score}</td>'
                 f'<td class="desc">{title}</td>'
+                f'<td class="vendor">{vend_short}</td>'
                 f"<td>{pub}</td>"
                 f"</tr>"
             )
         table = f"""
         <table>
-          <thead><tr><th>CVE</th><th>Severity</th><th>Score</th><th>Summary</th><th>Published</th></tr></thead>
+          <thead><tr><th>CVE</th><th>Severity</th><th>Score</th><th>Summary</th><th>Affected</th><th>Published</th></tr></thead>
           <tbody>{body_rows}</tbody>
         </table>
         <p class="sub">Showing {len(rows)} result(s).</p>
@@ -229,6 +241,7 @@ def render_list(rows, stats, search, severity, sort):
   </div>
   <form class="controls" method="get" action="/">
     <input type="text" name="q" placeholder="Search by CVE ID or keyword..." value="{html.escape(search)}">
+    <input type="text" name="vendor" placeholder="Vendor / product (e.g. apache)" value="{html.escape(vendor)}">
     <select name="severity">{sev_options}</select>
     <select name="sort">{sort_options}</select>
     <button type="submit">Search</button>
@@ -239,6 +252,16 @@ def render_list(rows, stats, search, severity, sort):
 
 def render_detail(cve):
     score = "Unrated" if cve["cvss_score"] is None else f'{cve["cvss_score"]:.1f} / 10'
+
+    # Affected software as clickable chips (each links back to a filtered list).
+    affected = ""
+    products = [p.strip() for p in (cve["products"] or "").split(",") if p.strip()]
+    if products:
+        chips = "".join(
+            f'<a class="chip" href="/?vendor={urllib.parse.quote(p)}">{html.escape(p)}</a>'
+            for p in products[:20]
+        )
+        affected = f'<div class="k">Affected products</div><div class="chips">{chips}</div>'
     return f"""<!doctype html>
 <html><head><meta charset="utf-8"><title>{html.escape(cve['cve_id'])} — CVE Explorer</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -254,6 +277,7 @@ def render_detail(cve):
     </div>
     <div class="k">Description</div>
     <p class="desc">{html.escape(cve['description'] or 'No description available.')}</p>
+    {affected}
     <p class="sub">
       <a href="https://nvd.nist.gov/vuln/detail/{html.escape(cve['cve_id'])}" target="_blank">
         View on NVD &rarr;</a>
@@ -293,14 +317,16 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/":
             search = p("q").strip()
             severity = p("severity").strip()
+            vendor = p("vendor").strip()
             sort = p("sort", "cvss_score").strip()
-            rows = query_cves(search, severity, sort)
-            self._send(render_list(rows, get_stats(), search, severity, sort))
+            rows = query_cves(search, severity, vendor, sort)
+            self._send(render_list(rows, get_stats(), search, severity, vendor, sort))
             return
 
         # ---- JSON API (bonus: raw data for other tools) ----
         if path == "/api/cves":
-            rows = query_cves(p("q").strip(), p("severity").strip(), p("sort", "cvss_score").strip())
+            rows = query_cves(p("q").strip(), p("severity").strip(),
+                              p("vendor").strip(), p("sort", "cvss_score").strip())
             self._send(json.dumps(rows, indent=2), content_type="application/json")
             return
 

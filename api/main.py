@@ -7,6 +7,7 @@ import sqlite3
 import os
 import time
 import json
+import hashlib
 import urllib.parse
 import urllib.request
 from dotenv import load_dotenv
@@ -14,6 +15,16 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from azure_client import AzureAIFoundryClient
+
+# DB change detection - initialized on startup
+def get_db_hash():
+    db_path = "../data/cves.db"
+    if os.path.exists(db_path):
+        with open(db_path, "rb") as f:
+            return hashlib.md5(f.read()).hexdigest()
+    return None
+
+db_hash = get_db_hash()
 
 START_TIME = time.time()
 ai_client = AzureAIFoundryClient()
@@ -93,6 +104,7 @@ def health():
         "uptime_seconds": round(time.time() - START_TIME, 2),
         "data_source": source,
         "cached_remediations": len(remediation_cache),
+        "db_hash": db_hash,
     }
 
 @app.get("/stats")
@@ -113,6 +125,17 @@ def cache_stats():
         "cached_remediations": len(remediation_cache),
         "cached_cve_ids": list(remediation_cache.keys())
     }
+
+@app.post("/refresh")
+def refresh():
+    global db_hash, remediation_cache
+    new_hash = get_db_hash()
+    if new_hash != db_hash:
+        db_hash = new_hash
+        remediation_cache.clear()
+        cves, source = get_cves_from_source()
+        return {"status": "refreshed", "total_cves": len(cves), "source": source}
+    return {"status": "no_changes"}
 
 @app.get("/cves")
 def get_cves(
@@ -163,19 +186,12 @@ def get_summary():
     return {"total": total, "data_source": source, "by_severity": by_severity, "top_10_most_dangerous": top_10}
 
 @app.get("/cves/trending")
-@app.get("/cves/trending")
 def get_trending():
     cves, source = get_cves_from_source()
-    # Show most recent 20 CVEs sorted by severity
     sorted_by_date = sorted(cves, key=lambda x: x.get("published_date") or "", reverse=True)
     recent = sorted_by_date[:50]
-    # Then sort those by cvss score
     trending = sorted(recent, key=lambda x: x.get("cvss_score") or 0, reverse=True)
-    return {
-        "total": len(trending),
-        "description": "Most recent CVEs sorted by severity",
-        "data": trending
-    }
+    return {"total": len(trending), "description": "Most recent CVEs sorted by severity", "data": trending}
 
 @app.get("/cves/timeline")
 def get_timeline():
