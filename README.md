@@ -119,10 +119,12 @@ A **FastAPI** service (v2.0.0) with auto-generated Swagger docs at `/docs` and C
 | `GET` | `/stats` | Totals, average/max CVSS, and per-severity counts |
 | `GET` | `/health` | Liveness check — uptime, data source, cache size |
 | `GET` | `/cache/stats` | Inspect the AI remediation cache |
+| `POST` | `/refresh` | Detect DB changes via MD5 hash, clear AI cache, serve fresh data instantly |
 
 ### AI-Powered Remediation
 
 The API integrates with **Azure OpenAI** (via [`api/azure_client.py`](api/azure_client.py)) to turn dense CVE descriptions into **concise, actionable remediation steps** — and caches each result so repeat lookups are instant and free.
+Built and maintained by Or Davidovitz.
 
 ```bash
 cd api
@@ -152,7 +154,7 @@ A polished, Apple-inspired single-page app built with **React + Vite**. This is 
 ```bash
 cd frontend
 npm install
-npm run dev      # → http://localhost:5173
+npm run dev      # → http://localhost:3000
 ```
 
 ---
@@ -206,7 +208,7 @@ uvicorn main:app --reload --port 8000
 # 3. Start the dashboard (in a second terminal)
 cd frontend && npm install && npm run dev
 
-# 4. Open http://localhost:5173 and start exploring 🏄
+# 4. Open http://localhost:3000 and start exploring 🏄
 ```
 
 ---
@@ -218,7 +220,7 @@ Docker isn't required — the whole system runs with just `python3` and `npm`. B
 ```bash
 docker compose up --build
 # API       → http://localhost:8000  (docs at /docs)
-# Dashboard → http://localhost:5173
+# Dashboard → http://localhost:3000
 ```
 
 **Why bother?** It removes the "install Python *and* Node at the right versions, then run three terminals" friction — one command, and the stack is live. The shared `data/cves.db` is mounted as a volume so the scraper, API, and UI all see the same data.
