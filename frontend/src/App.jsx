@@ -60,6 +60,44 @@ function LoadingDots() {
   );
 }
 
+function SimilarCves({ cveId }) {
+  const [similar, setSimilar] = useState([]);
+  const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    setLoading(true);
+    fetch(`/cves/${cveId}/similar`)
+      .then(r => r.json())
+      .then(d => setSimilar(d.data || []))
+      .catch(() => setSimilar([]))
+      .finally(() => setLoading(false));
+  }, [cveId]);
+
+  if (loading) return <p style={{ color: "#8e8e93", fontSize: 12, marginTop: 16 }}>Loading similar CVEs...</p>;
+  if (!similar.length) return null;
+
+  return (
+    <div style={{ marginTop: 20 }}>
+      <p style={{ color: "#8e8e93", fontSize: 12, fontWeight: 600, letterSpacing: "0.06em", marginBottom: 10 }}>SIMILAR VULNERABILITIES</p>
+      <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+        {similar.slice(0, 3).map(cve => {
+          const sev = (cve.severity || "UNKNOWN").toUpperCase();
+          const cfg = SEVERITY_CONFIG[sev] || SEVERITY_CONFIG.UNKNOWN;
+          return (
+            <div key={cve.cve_id} style={{ background: "#f5f5f7", borderRadius: 10, padding: "10px 14px", borderLeft: `3px solid ${cfg.color}` }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                <span style={{ color: "#0071e3", fontFamily: "monospace", fontSize: 11, fontWeight: 700 }}>{cve.cve_id}</span>
+                <span style={{ background: cfg.bg, color: cfg.color, border: `1px solid ${cfg.border}`, borderRadius: 4, padding: "2px 8px", fontSize: 10, fontWeight: 700 }}>{sev}</span>
+              </div>
+              <p style={{ color: "#3a3a3c", fontSize: 12, margin: "4px 0 0", lineHeight: 1.4, overflow: "hidden", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical" }}>{cve.title || cve.description}</p>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 function AISummary({ cveId }) {
   const [summary, setSummary] = useState(null);
   const [loading, setLoading] = useState(false);
@@ -306,6 +344,7 @@ function CveModal({ cve, onClose }) {
             <p style={s.modalDescBox}>{cve.description || "No description available."}</p>
           </div>
 
+          <SimilarCves cveId={cve.cve_id} />
           <AISummary cveId={cve.cve_id} />
 
           <ExploreSources cveId={cve.cve_id} />
@@ -387,6 +426,115 @@ function sortCves(list, sortBy) {
   }
 }
 
+function TrendingSection({ onSelect }) {
+  const [trending, setTrending] = useState([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    fetch("/cves/trending")
+      .then(r => r.json())
+      .then(d => setTrending(d.data || []))
+      .catch(() => setTrending([]))
+      .finally(() => setLoading(false));
+  }, []);
+
+  if (loading || !trending.length) return null;
+
+  return (
+    <div style={{ marginBottom: 28 }}>
+      <p style={{ color: "#8e8e93", fontSize: 12, fontWeight: 600, letterSpacing: "0.06em", marginBottom: 10 }}>🔥 TRENDING — MOST RECENT DANGEROUS CVEs</p>
+      <div style={{ display: "flex", gap: 10, overflowX: "auto", paddingBottom: 6 }}>
+        {trending.slice(0, 6).map(cve => {
+          const sev = (cve.severity || "UNKNOWN").toUpperCase();
+          const cfg = SEVERITY_CONFIG[sev] || SEVERITY_CONFIG.UNKNOWN;
+          return (
+            <div
+              key={cve.cve_id}
+              onClick={() => onSelect(cve)}
+              style={{
+                minWidth: 220, background: "#ffffff", borderRadius: 12,
+                padding: "14px 16px", cursor: "pointer",
+                border: `1px solid ${cfg.border}`,
+                borderTop: `3px solid ${cfg.color}`,
+                boxShadow: "0 1px 4px rgba(0,0,0,0.06)",
+                flexShrink: 0,
+              }}
+            >
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+                <span style={{ color: "#0071e3", fontFamily: "monospace", fontSize: 11, fontWeight: 700 }}>{cve.cve_id}</span>
+                <span style={{ background: cfg.bg, color: cfg.color, border: `1px solid ${cfg.border}`, borderRadius: 4, padding: "2px 6px", fontSize: 10, fontWeight: 700 }}>{sev}</span>
+              </div>
+              <p style={{ color: "#1d1d1f", fontSize: 12, fontWeight: 600, margin: 0, lineHeight: 1.35, overflow: "hidden", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical" }}>
+                {cve.title || cve.cve_id}
+              </p>
+              {cve.cvss_score && (
+                <p style={{ color: cfg.color, fontSize: 11, fontFamily: "monospace", fontWeight: 700, margin: "6px 0 0" }}>
+                  CVSS {Number(cve.cvss_score).toFixed(1)}
+                </p>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function TimelineChart() {
+  const [timeline, setTimeline] = useState([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    fetch("/cves/timeline")
+      .then(r => r.json())
+      .then(d => setTimeline(d.data || []))
+      .catch(() => setTimeline([]))
+      .finally(() => setLoading(false));
+  }, []);
+
+  if (loading || !timeline.length) return null;
+
+  // Only show months that have CVEs
+  const active = timeline.filter(t => t.total > 5).slice(-12);
+  if (!active.length) return null;
+  const maxTotal = Math.max(...active.map(t => t.total), 1);
+
+  return (
+    <div style={{ background: "#ffffff", borderRadius: 16, padding: "20px 24px", marginBottom: 28, border: "1px solid #e5e5ea", boxShadow: "0 1px 3px rgba(0,0,0,0.06)" }}>
+      <p style={{ color: "#8e8e93", fontSize: 12, fontWeight: 600, letterSpacing: "0.06em", marginBottom: 16 }}>📊 CVE TIMELINE — TOP MONTHS</p>
+      <div style={{ display: "flex", alignItems: "flex-end", gap: 8, height: 100 }}>
+        {active.map(t => {
+          const critH = (t.CRITICAL / maxTotal) * 80;
+          const highH = (t.HIGH / maxTotal) * 80;
+          const medH = (t.MEDIUM / maxTotal) * 80;
+          const lowH = (t.LOW / maxTotal) * 80;
+          return (
+            <div key={t.month} style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", gap: 4 }}>
+              <span style={{ color: "#3a3a3c", fontSize: 9, fontWeight: 600 }}>{t.total}</span>
+              <div style={{ width: "100%", height: 75, display: "flex", flexDirection: "column", justifyContent: "flex-end", borderRadius: 4, overflow: "hidden", minWidth: 20 }}
+                title={`${t.month}: ${t.total} CVEs (${t.CRITICAL} CRITICAL, ${t.HIGH} HIGH)`}>
+                <div style={{ height: `${lowH}%`, background: "#34c759", minHeight: t.LOW > 0 ? 2 : 0 }} />
+                <div style={{ height: `${medH}%`, background: "#f5a623", minHeight: t.MEDIUM > 0 ? 2 : 0 }} />
+                <div style={{ height: `${highH}%`, background: "#ff9500", minHeight: t.HIGH > 0 ? 2 : 0 }} />
+                <div style={{ height: `${critH}%`, background: "#ff3b30", minHeight: t.CRITICAL > 0 ? 2 : 0 }} />
+              </div>
+              <span style={{ color: "#aeaeb2", fontSize: 9, textAlign: "center" }}>{t.month.slice(0, 7)}</span>
+            </div>
+          );
+        })}
+      </div>
+      <div style={{ display: "flex", gap: 12, marginTop: 10, flexWrap: "wrap" }}>
+        {[["CRITICAL", "#ff3b30"], ["HIGH", "#ff9500"], ["MEDIUM", "#f5a623"], ["LOW", "#34c759"]].map(([label, color]) => (
+          <div key={label} style={{ display: "flex", alignItems: "center", gap: 4 }}>
+            <div style={{ width: 8, height: 8, borderRadius: 2, background: color }} />
+            <span style={{ color: "#8e8e93", fontSize: 10, fontWeight: 600 }}>{label}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 export default function App() {
   const [cves, setCves] = useState([]);
   const [stats, setStats] = useState({ CRITICAL: 0, HIGH: 0, MEDIUM: 0, LOW: 0, total: 0 });
@@ -451,11 +599,11 @@ export default function App() {
   const handleScrape = async () => {
     setScraping(true);
     try {
-      const res = await fetch("/scrape", { method: "POST" });
+      const res = await fetch("/refresh", { method: "POST" });
       if (!res.ok) throw new Error();
       await fetchCves(search, severity);
     } catch {
-      alert("Scraper failed. Make sure the backend exposes a POST /scrape endpoint.");
+      alert("Scraper failed. Make sure the backend exposes a POST /refresh endpoint.");
     } finally { setScraping(false); }
   };
 
@@ -506,6 +654,9 @@ export default function App() {
               <span style={s.totalLabel}>TOTAL</span>
             </div>
           </div>
+
+          <TrendingSection onSelect={setSelected} />
+          <TimelineChart />
 
           <div style={s.searchRow}>
             <div style={s.searchBox}>
